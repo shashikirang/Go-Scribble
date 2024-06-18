@@ -1,0 +1,39 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+)
+
+// Function to calculate the median
+func median(data []int) float64 {
+	n := len(data)
+	if n == 0 {
+		return float64(0)
+	}
+
+	if n%2 == 0 {
+		return float64(data[n/2-1]+data[n/2]) / 2
+	}
+	return float64(data[n/2])
+}
+
+// Function to calculate the IQR
+func calculateIQR(data []int) float64 {
+
+	sort.Ints(data)
+
+	n := len(data)
+
+	q1 := median(data[:n/2])
+	q3 := median(data[(n+1)/2:])
+	fmt.Println("q3 value is ", q3)
+	fmt.Println("q1 value is ", q1)
+
+	return q3 - q1
+}
+
+func main() {
+	iqr := calculateIQR([]int{11, 14, 14, 14})
+	fmt.Println("iqr value is ", iqr)
+}
