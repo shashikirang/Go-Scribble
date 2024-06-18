@@ -1,0 +1,32 @@
+// Program to sanitize a filename
+
+package main
+
+import (
+        "fmt"
+        "path/filepath"
+        "regexp"
+)
+
+func sanitizeFileName(filePath string) string {
+        // Clean the path
+        cleanedPath := filepath.Clean(filePath)
+
+        // Extract the file name
+        fileName := filepath.Base(cleanedPath)
+
+        // Remove unsafe characters using regular expressions
+        unsafeChars := regexp.MustCompile(`[\\/:*?"<>|]`)
+        sanitizedFileName := unsafeChars.ReplaceAllString(fileName, "_")
+
+        return sanitizedFileName
+}
+
+func main() {
+        // Example file path with potential issues
+        filePath := "/path/with\\!!!unsafe*filename.txt"
+
+        sanitizedFileName := sanitizeFileName(filePath)
+        fmt.Println("Original Path:", filePath)
+        fmt.Println("Sanitized File Name:", sanitizedFileName)
+}
