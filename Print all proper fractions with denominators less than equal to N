@@ -1,0 +1,50 @@
+//Given an integer N, the task is to print all proper fractions such that the denominator is less than or equal to N. 
+
+//Proper Fractions: A fraction is said to be a proper fraction if the numerator is less than the denominator. 
+//Input: N = 3 
+//Output: 1/2, 1/3, 2/3
+
+//Input: N = 4 
+//Output: 1/2, 1/3, 1/4, 2/3, 3/4 
+
+
+package main
+
+import "fmt"
+
+func isPrime(n, d int) int {
+
+	for d > 0 {
+		temp := d
+		d = n % d
+		n = temp
+	}
+
+	return n
+
+}
+
+func CountingFractions(n, d int) int {
+
+	if n >= d {
+		return 0
+	}
+
+	prime := isPrime(n, d)
+	return prime
+}
+
+func main() {
+
+	num := 3
+	n := 1
+	d := 1
+	for n = 1; n <= num; n++ {
+		for d = 1; d <= num; d++ {
+
+			if CountingFractions(n, d) == 1 {
+				fmt.Println(n, "/", d)
+			}
+		}
+	}
+}
