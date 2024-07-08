@@ -1,0 +1,45 @@
+//The Efficient Janitor problem involves finding the minimum number of trips required for a janitor to carry garbage bags to the dumpster, with each bag having a specific weight and each trip having a weight limit. Here's an efficient solution in Go:
+
+//Problem Definition:
+
+//Each garbage bag has a weight between 1.01 and 3.00 (inclusive).
+//Each trip can carry a maximum of 3.00 weight.
+
+
+package main
+
+import (
+	"fmt"
+	"sort"
+)
+
+func minTrips(arr []float64) int {
+
+	trips := 0
+	i := 0
+	j := len(arr) - 1
+	sort.Float64s(arr)
+	fmt.Println(arr)
+	//for i, j = 0, len(arr)-1; i < j; {
+	for i <= j {
+		if arr[j]+arr[i] <= 3.00 {
+			i++
+
+		}
+		j--
+		trips++
+
+	}
+	return trips
+
+}
+
+func main() {
+
+	//arr := []float64{1.01, 1.99, 2.5, 1.5, 1.01, 1.06}
+	arr := []float64{1.01, 1.99, 2.5, 1.5, 2.01, 1.75}
+	fmt.Println(arr)
+
+	trips := minTrips(arr)
+	fmt.Println(trips)
+}
