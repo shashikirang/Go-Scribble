@@ -1,0 +1,584 @@
+Sample program to demonstrate applying time block analysis on the stream of log messages 
+Say example in this program is to flag an event 
+* if it occurs x number of times in last 1 minute 
+* if it occurs y number of times in last 3 minutes 
+
+package tba
+
+import (
+        "aiops/common"
+        logger "aiops/logger"
+        "fmt"
+        jsoniter "github.com/json-iterator/go"
+        "strconv"
+        "strings"
+        "sync"
+        "time"
+)
+
+const (
+        SHORT                    = 1
+        LONG                     = 2
+        RESULT_SHORT             = 3
+        RESULT_LONG              = 4
+        SHORT_INT_MINS           = "1"
+        LONG_INT_MINS            = "3"
+        KEYCONST                 = "SWPF|"
+        KEYCONSTLONG             = "long|"
+        SHORT_INTERVAL_THRESHOLD = 6
+        LONG_INTERVAL_THRESHOLD  = 20
+        SHORT_INT                = 60  // 60 seconds in nanosecond precision
+        LONG_INT                 = 180 // 180 seconds in nanosecond precision
+        NANOSEC                  = 1000000000
+        RESULTS                  = "ResultSWPFEvents"
+)
+
+var (
+        _swauditdone bool
+        auditlock    sync.RWMutex
+)
+
+func InitAuditSwEvents() bool {
+
+        auditlock.RLock()
+        if _swauditdone == false {
+                auditlock.RUnlock()
+
+                auditlock.Lock()
+                _swauditdone = true
+                auditlock.Unlock()
+
+                return false
+        } else {
+                auditlock.RUnlock()
+                return true
+        }
+
+}
+
+//Redis Operations start
+func GetEventType(logctx *logger.CustomContext, key string) int {
+
+        dbEventType := -1
+        var json = jsoniter.ConfigCompatibleWithStandardLibrary
+
+        //Get event from the redis from the last inserted entry
+        rkey := KEYCONST + key
+        value, err := common.Redis_con.LIndex(common.Redis_Context, rkey, 0).Result()
+        if err != nil {
+                return dbEventType
+        } else {
+                var event map[string]interface{}
+                e := json.Unmarshal([]byte(value), &event)
+                if e != nil {
+                        logctx.Log(logger.ERROR, "GetEventType:: Error in parsing", string(value), e)
+                } else {
+                        if ev, ok := event["CustomFields"]; ok {
+                                if event, ok := ev.(map[string]interface{})["SubClassifier"]; ok {
+                                        dbEventType = int(event.(float64))
+                                }
+                        }
+
+                }
+        }
+
+        return dbEventType
+}
+
+func InsertEvent(logctx *logger.CustomContext, key, msg string, numberofentries int, evtype int) {
+
+        var json = jsoniter.ConfigCompatibleWithStandardLibrary
+        switch evtype {
+        case SHORT:
+                {
+                        //Insert the event in short interval list
+                        rkey := KEYCONST + key
+                        err := common.Redis_con.LPush(common.Redis_Context, rkey, msg).Err()
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [SHORT] Error seen inserting data into redis : ", err)
+                        }
+                }
+
+        case LONG:
+                {
+                        // Unmarshal the JSON string into a map
+                        var jsonObject map[string]interface{}
+                        err := json.Unmarshal([]byte(msg), &jsonObject)
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [LONG] Error in unmarshalling  : ", err)
+                                return
+                        }
+
+                        // Add the new key-value pair
+                        jsonObject["NumberOfStateChange"] = numberofentries
+
+                        // Marshal the map back into a JSON string
+                        updatedJson, err := json.Marshal(jsonObject)
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [LONG] Error marshalling json : ", err)
+                                return
+                        }
+
+                        //Insert the event in long interval list
+                        longIntervalListKey := KEYCONSTLONG + key
+                        err = common.Redis_con.LPush(common.Redis_Context, longIntervalListKey, string(updatedJson)).Err()
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [LONG] Error seen inserting data into redis : ", err)
+                                return
+                        }
+
+                }
+
+        case RESULT_SHORT:
+                {
+                        // Unmarshal the JSON string into a map
+                        var jsonObject map[string]interface{}
+                        err := json.Unmarshal([]byte(msg), &jsonObject)
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_SHORT] Error in unmarshalling  : ", err)
+                                return
+                        }
+
+                        customFields, ok := jsonObject["CustomFields"].(map[string]interface{})
+                        if !ok {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_SHORT] Error [No Field]  : ", err)
+                                return
+                        }
+
+                        portID, ok := customFields["port_id"].(string)
+                        if !ok {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_SHORT] Error [Mismatch Type]  : ", err)
+                                return
+                        }
+
+                        // Add the new key-value pair
+                        jsonObject["Msg"] = "Port flap identified on port [" + portID + "] of switch[" + jsonObject["SwitchSn"].(string) + "] for " + fmt.Sprintf("%v", numberofentries) +
+                                " times within " + SHORT_INT_MINS + " minute"
+
+                        // Marshal the map back into a JSON string
+                        updatedJson, err := json.Marshal(jsonObject)
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_SHORT] Error in marshalling the string : ", err)
+                                return
+                        }
+
+                        //Insert result events to be reported to correlator
+                        err = common.Redis_con.HSet(common.Redis_Context, RESULTS, key, string(updatedJson)).Err()
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_SHORT] Error inserting data into redis : ", err)
+                                return
+                        }
+                }
+
+        case RESULT_LONG:
+                {
+                        // Unmarshal the JSON string into a map
+                        var jsonObject map[string]interface{}
+                        err := json.Unmarshal([]byte(msg), &jsonObject)
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_LONG] Error in unmarshalling  : ", err)
+                                return
+                        }
+
+                        customFields, ok := jsonObject["CustomFields"].(map[string]interface{})
+                        if !ok {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_LONG] Error [No field]  : ", err)
+                                return
+                        }
+
+                        portID, ok := customFields["port_id"].(string)
+                        if !ok {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_LONG] Error [Mismatch Type]  : ", err)
+                                return
+                        }
+                        // Add the new key-value pair
+                        jsonObject["Msg"] = "Port flap identified on port [" + portID + "] of switch[" + jsonObject["SwitchSn"].(string) + "] for " + fmt.Sprintf("%v", numberofentries) +
+                                " times within " + LONG_INT_MINS + " minutes"
+
+                        // Marshal the map back into a JSON string
+                        updatedJson, err := json.Marshal(jsonObject)
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_LONG] Error marshalling data : ", err)
+                                return
+                        }
+
+                        index := strings.Index(key, KEYCONSTLONG)
+                        if index == -1 {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_LONG] Key Format not found ", key)
+                                return
+                        }
+
+                        // Extract the substring after "long-"
+                        lkey := key[index+len(KEYCONSTLONG):]
+
+                        //Insert result events to be reported to correlator
+                        err = common.Redis_con.HSet(common.Redis_Context, RESULTS, lkey, string(updatedJson)).Err()
+                        if err != nil {
+                                logctx.Log(logger.ERROR, "InsertEvent:: [RESULT_LONG] Error inserting data into redis : ", err)
+                                return
+                        }
+
+                }
+
+        default:
+                logctx.Log(logger.TRACE, "InsertEvent:: [DEFAULT] case  ")
+        }
+}
+
+func DeleteEvent(logctx *logger.CustomContext, key string) {
+
+        status, _ := common.Redis_con.Del(common.Redis_Context, key).Result()
+        logctx.Log(logger.DEBUG, "DeleteEvent:: Deleted ", key, "status:", status)
+
+}
+
+func GetKeysFromRedis(logctx *logger.CustomContext, evtype int) []string {
+
+        switch evtype {
+
+        case SHORT:
+                {
+                        var keys []string
+
+                        key := KEYCONST + "*-*-*"
+                        iter := common.Redis_con.Scan(common.Redis_Context, 0, key, 0).Iterator()
+                        for iter.Next(common.Redis_Context) {
+                                key := iter.Val()
+                                keys = append(keys, key)
+                        }
+
+                        if err := iter.Err(); err != nil {
+                                logctx.Log(logger.WARN, "GetKeysFromRedis:: Error >>> ", err)
+                                return nil
+                        }
+
+                        return keys
+                }
+
+        case LONG:
+                {
+                        var keys []string
+
+                        key := KEYCONSTLONG + KEYCONST + "*-*-*"
+                        iter := common.Redis_con.Scan(common.Redis_Context, 0, key, 0).Iterator()
+                        for iter.Next(common.Redis_Context) {
+                                key := iter.Val()
+                                keys = append(keys, key)
+                        }
+
+                        if err := iter.Err(); err != nil {
+                                logctx.Log(logger.WARN, "GetKeysFromRedis:: Error >>> ", err)
+                                return nil
+                        }
+
+                        return keys
+
+                }
+
+        default:
+                return nil
+
+        }
+}
+
+func GetInfoFromTheFirstEvent(logctx *logger.CustomContext, index int, key string) (int64, string) {
+
+        s_ts := int64(0)
+        var json = jsoniter.ConfigCompatibleWithStandardLibrary
+
+        //Get event from the redis from the last inserted entry
+        value, err := common.Redis_con.LIndex(common.Redis_Context, key, int64(index)).Result()
+        if err != nil {
+                return 0, ""
+        } else {
+                var event map[string]interface{}
+                e := json.Unmarshal([]byte(value), &event)
+                if e != nil {
+                        logctx.Logf(logger.ERROR, "GetInfoFromTheFirstEvent::: parsing failed for swEvent msg, msg = %v, error = %v", string(value), e)
+                        return 0, ""
+                } else {
+                        if evts, ok := event["EventTime"]; ok {
+                                s_ts, err = strconv.ParseInt(evts.(string), 10, 64)
+                                if err != nil {
+                                        return s_ts, string(value)
+                                }
+                        }
+                }
+        }
+
+        return s_ts, string(value)
+
+}
+
+func GetInfoFromTheLongIntervalEvents(logctx *logger.CustomContext, key string) (int64, string, int) {
+
+        s_ts := int64(0)
+        msg := ""
+        numOfStateChanges := 0
+        var liSamples []string
+
+        var json = jsoniter.ConfigCompatibleWithStandardLibrary
+
+        //Add all the samples in the array
+        lmem, err := common.Redis_con.LRange(common.Redis_Context, key, 0, -1).Result()
+        if err != nil {
+                panic(err)
+        } else {
+                for _, v := range lmem {
+                        liSamples = append(liSamples, v)
+                }
+        }
+
+        entries := len(liSamples)
+        for index, value := range liSamples {
+
+                var event map[string]interface{}
+                e := json.Unmarshal([]byte(value), &event)
+                if e != nil {
+                        logctx.Logf(logger.ERROR, "GetInfoFromTheLongIntervalEvents:: parsing failed for swEvent msg, msg = %v, error = %v", string(value), e)
+                        return s_ts, msg, numOfStateChanges
+                } else {
+                        if index == entries-1 {
+                                if evts, ok := event["EventTime"]; ok {
+                                        s_ts, err = strconv.ParseInt(evts.(string), 10, 64)
+                                        if err != nil {
+                                                return s_ts, msg, numOfStateChanges
+                                        }
+                                }
+                                msg = string(value)
+                        }
+
+                        if val, ok := event["NumberOfStateChange"]; ok {
+                                numOfStateChanges += int(val.(float64))
+                        }
+                }
+        }
+
+        return s_ts, msg, numOfStateChanges
+
+}
+
+func GetNumberOfEntries(logctx *logger.CustomContext, key string) int {
+
+        len, err := common.Redis_con.LLen(common.Redis_Context, key).Result()
+        if err != nil {
+                logctx.Log(logger.ERROR, "GetNumberOfEntries:: Error acessing redis key :", err)
+                return int(0)
+        }
+
+        return int(len)
+
+}
+
+func PostEvents(logctx *logger.CustomContext, swChan chan<- string) {
+
+        var json = jsoniter.ConfigCompatibleWithStandardLibrary
+        result, err := common.Redis_con.HGetAll(common.Redis_Context, RESULTS).Result()
+        if err != nil {
+                logctx.Log(logger.ERROR, "PostEvents:: Error acessing redis key :", err)
+                return
+        }
+
+        //Iterate through all the results and post an event to correlator
+        for _, value := range result {
+
+                // Unmarshal the JSON string into a map
+                var jsonObject map[string]interface{}
+                err := json.Unmarshal([]byte(value), &jsonObject)
+                if err != nil {
+                        logctx.Log(logger.ERROR, "PostEvents:: Error unmarshalling :", err, ":", string(value))
+                        return
+                }
+
+                // Access and modify the nested CustomFields
+                customFields, ok := jsonObject["CustomFields"].(map[string]interface{})
+                if !ok {
+                        logctx.Log(logger.ERROR, "PostEvents:: Error [No CustomFields]")
+                        return
+                }
+
+                // Modify the SubClassifier field
+                customFields["SubClassifier"] = common.SC_FSW_PORT_FLAP // Set new value here
+
+                // Marshal the map back into a JSON string
+                updatedJson, err := json.Marshal(jsonObject)
+                if err != nil {
+                        logctx.Log(logger.ERROR, "PostEvents:: Error marshalling :", err, ":", jsonObject)
+                        return
+                }
+
+                swChan <- string(updatedJson)
+
+        }
+
+        //Cleanup the key once all events are posted
+        //CLeanup has to be done per field if this is spawned as a separate worker
+        DeleteEvent(logctx, RESULTS)
+
+}
+
+//Redis Operations end
+
+func RecvSwMsgForTBA(workerId int, tbaChan <-chan string, logctx *logger.CustomContext) { // need to pass apProdchan
+
+        logctx.Log(logger.TRACE, "RecvSwMsgForTBA :: Start - Waiting for the messages over the TBA Channel")
+
+        for msg := range tbaChan {
+                logctx.Log(logger.TRACE, "RecvSwMsgForTBA ::  msg received : ", msg)
+
+                var swEvent map[string]interface{}
+
+                // Event Fields
+                portid := ""
+                eventType := -1
+                devicesn := ""
+                swsn := ""
+
+                var json = jsoniter.ConfigCompatibleWithStandardLibrary
+                e := json.Unmarshal([]byte(msg), &swEvent)
+                if e != nil {
+                        logctx.Logf(logger.ERROR, "RecvSwMsgForTBA:: parsing failed for swEvent msg, msg = %v, error = %v", msg, e)
+                        continue
+                } else {
+
+                        if device, ok := swEvent["deviceSn"]; ok {
+                                devicesn = device.(string)
+                        }
+
+                        if sw, ok := swEvent["SwitchSn"]; ok {
+                                swsn = sw.(string)
+                        }
+
+                        //Read the values from the message
+                        if customFields, ok := swEvent["CustomFields"]; ok {
+                                if event, ok := customFields.(map[string]interface{})["SubClassifier"]; ok {
+                                        eventType = int(event.(float64))
+                                        if port, ok := customFields.(map[string]interface{})["port_id"]; ok {
+                                                portid = port.(string)
+                                        }
+                                }
+                        }
+
+                }
+
+                if devicesn != "" && swsn != "" && portid != "" && eventType != 0 {
+                        key := devicesn + "-" + swsn + "-" + portid
+                        //Check if the entry is present in redis for the key
+
+                        DbeventType := GetEventType(logctx, key)
+
+                        //Insert the entry in redis
+                        if DbeventType != -1 && DbeventType != eventType {
+                                InsertEvent(logctx, key, msg, 0, SHORT)
+                        } else if DbeventType == -1 && eventType == common.SC_FSW_PORT_DOWN {
+                                InsertEvent(logctx, key, msg, 0, SHORT)
+                        } else {
+                                logctx.Logf(logger.TRACE, "RecvSwMsgForTBA:: Eventype not inserted in redis : ", eventType)
+                        }
+                }
+        }
+}
+
+func AuditSwEvents(swChan chan<- string, logctx *logger.CustomContext) {
+
+        //Init Redis Context
+        common.InitRedisConnection()
+        isInitialised := InitAuditSwEvents()
+        if isInitialised == true {
+                logctx.Logf(logger.TRACE, "AuditSwEvents:: Already Audit Instance running ...... ")
+                return
+        }
+
+        for range time.Tick(5 * time.Second) {
+                logctx.Log(logger.DEBUG, "AuditSwEvents:: Start")
+
+                //Get the list of keys from short interval bucket
+                // Key format "devicesn-swsn-port" ex: "FG101FTK19006674-S108FFTV21000059-2"
+                keyType := SHORT
+                sIKeys := GetKeysFromRedis(logctx, keyType)
+
+                for _, key := range sIKeys {
+
+                        numberOfEntries := GetNumberOfEntries(logctx, key) // returns the length of the list
+                        firstEntryIndex := numberOfEntries - 1
+
+                        //Get start time of the block
+                        startTime, rawmsg := GetInfoFromTheFirstEvent(logctx, firstEntryIndex, key)
+
+                        timenow := time.Now().UnixNano()
+                        timeElapsedTillNow := timenow - startTime
+
+                        if timeElapsedTillNow >= (SHORT_INT*NANOSEC) && timeElapsedTillNow <= ((SHORT_INT+5)*NANOSEC) {
+
+                                logctx.Logf(logger.TRACE, "AuditSwEvents:: timeElapsedTillNow[", timeElapsedTillNow, "] numberOfEntries[", numberOfEntries, "]")
+                                if numberOfEntries >= SHORT_INTERVAL_THRESHOLD {
+                                        //Threshold breach
+                                        InsertEvent(logctx, key, rawmsg, numberOfEntries, RESULT_SHORT)
+
+                                        //Delete this event from redis
+                                        DeleteEvent(logctx, key)
+
+                                        //Add this event in long interval list
+                                        InsertEvent(logctx, key, rawmsg, numberOfEntries, LONG)
+                                } else {
+
+                                        //Delete this event from redis
+                                        DeleteEvent(logctx, key)
+
+                                        //Add this event in long interval list
+                                        InsertEvent(logctx, key, rawmsg, numberOfEntries, LONG)
+
+                                }
+
+                        } else if timeElapsedTillNow > (SHORT_INT+10)*NANOSEC {
+                                logctx.Logf(logger.TRACE, "AuditSwEvents:: timeElapsedTillNow[", timeElapsedTillNow, "] numberOfEntries[", numberOfEntries, "]")
+                                //Delete this event from redis
+                                DeleteEvent(logctx, key)
+
+                        }
+                }
+
+                //Iterate through long interval event keys
+                // Key format "long-devicesn-swsn-port" ex: "long-FG101FTK19006674-S108FFTV21000059-2"
+                keyType = LONG
+                lIKeys := GetKeysFromRedis(logctx, keyType)
+
+                for _, key := range lIKeys {
+
+                        //Get start time of the block
+                        startTime, rawmsg, numberOfEntries := GetInfoFromTheLongIntervalEvents(logctx, key)
+
+                        timenow := time.Now().UnixNano()
+                        timeElapsedTillNow := timenow - startTime
+
+                        if timeElapsedTillNow >= (LONG_INT*NANOSEC) && timeElapsedTillNow <= (LONG_INT+5)*NANOSEC {
+
+                                logctx.Logf(logger.TRACE, "AuditSwEvents:: [LONGINTERVAL] timeElapsedTillNow[", timeElapsedTillNow, "] numberOfEntries[", numberOfEntries, "]")
+                                if numberOfEntries >= LONG_INTERVAL_THRESHOLD {
+                                        //Threshold breach
+                                        InsertEvent(logctx, key, rawmsg, numberOfEntries, RESULT_LONG)
+
+                                        //Delete this event from redis
+                                        DeleteEvent(logctx, key)
+
+                                } else {
+
+                                        //Delete this event from redis
+                                        DeleteEvent(logctx, key)
+
+                                }
+
+                        } else if timeElapsedTillNow > (LONG_INT+10)*NANOSEC {
+                                logctx.Logf(logger.TRACE, "AuditSwEvents:: [LONGINTERVAL] timeElapsedTillNow[", timeElapsedTillNow, "] numberOfEntries[", numberOfEntries, "]")
+                                //Delete this event from redis
+                                DeleteEvent(logctx, key)
+
+                        }
+                }
+
+                // Post the events
+                PostEvents(logctx, swChan)
+
+                logctx.Log(logger.DEBUG, "AuditSwEvents:: End")
+        }
+}
