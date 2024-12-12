@@ -1,0 +1,63 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/go-redis/redis/v8"
+)
+
+// Define a struct
+type User struct {
+	ID       int
+	Name     string
+	Email    string
+	IsActive bool
+}
+
+func main() {
+	ctx := context.Background()
+
+	// Connect to Redis
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
+	// Create an instance of the struct
+	user := User{
+		ID:       1,
+		Name:     "John Doe",
+		Email:    "john.doe@example.com",
+		IsActive: true,
+	}
+
+	// Store the struct as a Redis hash
+	key := fmt.Sprintf("user:%d", user.ID)
+	err := rdb.HSet(ctx, key, map[string]interface{}{
+		"Name":     user.Name,
+		"Email":    user.Email,
+		"IsActive": user.IsActive,
+	}).Err()
+	if err != nil {
+		log.Fatalf("Failed to store user in Redis: %v", err)
+	}
+	fmt.Println("User stored successfully in Redis as a hash.")
+
+	// Retrieve the struct from the Redis hash
+	fields, err := rdb.HGetAll(ctx, key).Result()
+	if err != nil {
+		log.Fatalf("Failed to retrieve user from Redis: %v", err)
+	}
+
+	// Populate the struct from the hash fields
+	retrievedUser := User{
+		ID:       user.ID,
+		Name:     fields["Name"],
+		Email:    fields["Email"],
+		IsActive: fields["IsActive"] == "true", // Convert string to bool
+	}
+
+	// Print the retrieved struct
+	fmt.Printf("Retrieved User: %+v\n", retrievedUser)
+}
