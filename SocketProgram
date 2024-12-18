@@ -1,0 +1,116 @@
+Go socket Programming: 
+--------------------------------------------
+
+net package provides necessary functions and types for socket programming
+
+server.go 
+-----------------------------
+
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"net"
+	"strings"
+)
+
+type Request struct {
+	ID   int
+	Name string
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	// Read the incoming message
+	reader := bufio.NewReader(conn)
+	message, _ := reader.ReadString('\n')
+	fmt.Printf("Received: %s\n", message)
+
+	// Parse the message (assuming CSV format)
+	parts := strings.Split(strings.TrimSpace(message), ",")
+	if len(parts) < 2 {
+		fmt.Fprintf(conn, "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nInvalid request format\n")
+		return
+	}
+
+	// Process the request
+	req := Request{
+		ID:   parts[0],
+		Name: parts[1],
+	}
+	fmt.Printf("Parsed Struct: %+v\n", req)
+
+	// Send an HTTP response
+	response := "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nHello, " + req.Name + "!\n"
+	conn.Write([]byte(response))
+}
+
+func main() {
+	listener, err := net.Listen("tcp", ":8080")
+	if err != nil {
+		fmt.Println("Error starting server:", err)
+		return
+	}
+	defer listener.Close()
+
+	fmt.Println("Server is listening on port 8080...")
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+		go handleConnection(conn)
+	}
+}
+
+
+
+client.go 
+===================================== 
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"net"
+	"strconv"
+)
+
+type Request struct {
+	ID   int
+	Name string
+}
+
+func main() {
+	// Create the request struct
+	req := Request{
+		ID:   1,
+		Name: "John Doe",
+	}
+
+	// Connect to the server
+	conn, err := net.Dial("tcp", "127.0.0.1:8080")
+	if err != nil {
+		fmt.Println("Error connecting to server:", err)
+		return
+	}
+	defer conn.Close()
+
+	// Send the struct data as a CSV string
+	requestData := fmt.Sprintf("%d,%s\n", req.ID, req.Name)
+	fmt.Fprintf(conn, requestData)
+
+	// Read the response
+	reader := bufio.NewReader(conn)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading response:", err)
+		return
+	}
+	fmt.Println("Server response:")
+	fmt.Println(response)
+}
