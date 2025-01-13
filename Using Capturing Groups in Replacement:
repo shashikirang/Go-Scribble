@@ -1,0 +1,23 @@
+
+//Replace a key=value as value=key 
+//=======================================
+
+
+package main
+
+import (
+	"fmt"
+	"regexp"
+)
+
+func main() {
+	re := regexp.MustCompile(`(\w+)=(\w+)`) // Match key=value pairs
+	input := "key1=value1 key2=value2"
+	replacement := "$2:$1" // Swap value and key
+	result := re.ReplaceAllString(input, replacement)
+	fmt.Println(result)
+}
+
+
+//Output 
+value1:key1 value2:key2
