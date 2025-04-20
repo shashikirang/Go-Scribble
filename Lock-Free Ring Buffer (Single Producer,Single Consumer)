@@ -1,0 +1,64 @@
+package main
+
+import (
+	"fmt"
+	"sync/atomic"
+)
+
+type RingBuffer struct {
+	buffer []interface{}
+	size   uint64
+	head   uint64 // write index
+	tail   uint64 // read index
+}
+
+func NewRingBuffer(capacity uint64) *RingBuffer {
+	return &RingBuffer{
+		buffer: make([]interface{}, capacity),
+		size:   capacity,
+	}
+}
+
+func (rb *RingBuffer) Enqueue(val interface{}) bool {
+	head := atomic.LoadUint64(&rb.head)
+	tail := atomic.LoadUint64(&rb.tail)
+
+	if (head - tail) >= rb.size {
+		return false // full
+	}
+
+	index := head % rb.size
+	rb.buffer[index] = val
+	atomic.AddUint64(&rb.head, 1)
+	return true
+}
+
+func (rb *RingBuffer) Dequeue() (interface{}, bool) {
+	tail := atomic.LoadUint64(&rb.tail)
+	head := atomic.LoadUint64(&rb.head)
+
+	if tail == head {
+		return nil, false // empty
+	}
+
+	index := tail % rb.size
+	val := rb.buffer[index]
+	atomic.AddUint64(&rb.tail, 1)
+	return val, true
+}
+
+func main() {
+	rb := NewRingBuffer(4)
+
+	// Producer
+	for i := 1; i <= 4; i++ {
+		success := rb.Enqueue(i * 100)
+		fmt.Println("Enqueue:", i*100, "Success:", success)
+	}
+
+	// Consumer
+	for i := 1; i <= 4; i++ {
+		val, ok := rb.Dequeue()
+		fmt.Println("Dequeue:", val, "Success:", ok)
+	}
+}
